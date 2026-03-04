@@ -1,3 +1,6 @@
+import json
+import os
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,8 +10,26 @@ from stage3.utils import circle_weight_array
 
 
 class ProloculusDetector:
-    def __init__(self, block_num: int = 3):
+    def __init__(self, block_num: int = 3, center_prior_jsonl: str | None = None):
         self.block_num = block_num
+        self.center_prior_dict = self._load_center_priors(center_prior_jsonl)
+
+    def _load_center_priors(self, center_prior_jsonl: str | None) -> dict[str, tuple[int, int]]:
+        if center_prior_jsonl is None:
+            return {}
+
+        center_prior_dict = {}
+        with open(center_prior_jsonl, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                for image_name, center in parsed.items():
+                    if isinstance(center, dict) and "x" in center and "y" in center:
+                        center_prior_dict[str(image_name)] = (int(center["x"]), int(center["y"]))
+
+        return center_prior_dict
 
     def find_center(self, window_size: int, threshold: float = 0.25):
         # Find center of proloculus using sliding window
@@ -48,13 +69,20 @@ class ProloculusDetector:
         return candidate_centers
 
     def detect_initial_chamber(
-        self, image_path_to_detect: str, threshold: float = 0.25, visualize_result: bool = False
+        self,
+        image_path_to_detect: str,
+        threshold: float = 0.25,
+        visualize_result: bool = False,
+        rough_center: tuple[int, int] | None = None,
     ):
         self.img = cv2.imread(image_path_to_detect)
         self.width, self.height = self.img.shape[1], self.img.shape[0]
         # Convert to grayscale and extract center block
         self.img = cv2.cvtColor(self.img, cv2.COLOR_BGR2GRAY)
-        self.img_center_block = self.get_center_block()
+        image_name = os.path.basename(image_path_to_detect)
+        if rough_center is None and image_name in self.center_prior_dict:
+            rough_center = self.center_prior_dict[image_name]
+        self.img_center_block = self.get_search_block(rough_center)
 
         # Calculate score with different window size
         points_with_max_score = []
@@ -90,18 +118,29 @@ class ProloculusDetector:
         max_score_point = points_with_max_score[max_score_index]["points"][0]
         diameter = sizes[max_score_index]
 
-        x = max_score_point[0] + self.block_width * (self.block_num // 2)
-        y = max_score_point[1] + self.block_height * (self.block_num // 2)
+        x = max_score_point[0] + self.block_origin_x
+        y = max_score_point[1] + self.block_origin_y
         return [x, y, diameter]
 
-    def get_center_block(self):
+    def get_search_block(self, rough_center: tuple[int, int] | None = None):
         self.block_height = self.height // self.block_num
         self.block_width = self.width // self.block_num
 
-        x_start = (self.block_num // 2) * self.block_width
-        x_end = (self.block_num // 2 + 1) * self.block_width
-        y_start = (self.block_num // 2) * self.block_height
-        y_end = (self.block_num // 2 + 1) * self.block_height
+        if rough_center is None:
+            center_x, center_y = self.width // 2, self.height // 2
+        else:
+            center_x = int(np.clip(rough_center[0], 0, self.width - 1))
+            center_y = int(np.clip(rough_center[1], 0, self.height - 1))
+
+        max_x_start = max(self.width - self.block_width, 0)
+        max_y_start = max(self.height - self.block_height, 0)
+        x_start = int(np.clip(center_x - self.block_width // 2, 0, max_x_start))
+        y_start = int(np.clip(center_y - self.block_height // 2, 0, max_y_start))
+        x_end = x_start + self.block_width
+        y_end = y_start + self.block_height
+
+        self.block_origin_x = x_start
+        self.block_origin_y = y_start
 
         center_block = self.img[y_start:y_end, x_start:x_end]
         return center_block
