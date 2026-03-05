@@ -10,8 +10,13 @@ from stage3.initial_chamber import ProloculusDetector
 from stage3.utils import calculate_angle, resize_img
 from stage3.volution_counter import VolutionCounter
 
+"""
+快捷方法：直接在这里设置默认的center_prior_jsonl
+如果要支持args传入，则需要修改generate_dataset.py中的recognize_feature
+"""
 
-def recognize_feature(img_path: str) -> tuple:
+
+def recognize_feature(img_path: str, center_prior_jsonl: str | None = None) -> tuple:
     img_rgb = cv2.imread(img_path)
     orig_h, orig_w = img_rgb.shape[:2]
     # Opening preprocess and resize
@@ -22,7 +27,7 @@ def recognize_feature(img_path: str) -> tuple:
     h, w = img_rgb.shape[:2]
 
     # Detect initial chamber
-    proloculus_detector = ProloculusDetector()
+    proloculus_detector = ProloculusDetector(center_prior_jsonl=center_prior_jsonl)
     initial_chamber = proloculus_detector.detect_initial_chamber(img_path, threshold=0.25)
     if initial_chamber is None:  # retry with lower threshold
         initial_chamber = proloculus_detector.detect_initial_chamber(img_path, threshold=0.1)
