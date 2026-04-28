@@ -338,7 +338,6 @@ def chomatas_scan(
         )
         if not peaks_plat:
             return []
-        
         if debug:
             plt.figure(dpi=100)
             plt.imshow(img_bg, origin="lower")
