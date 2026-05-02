@@ -280,7 +280,9 @@ def chomatas_scan(
                 else:
                     ist += 1
                 p_pairs.append(min_p)
-            if len(p_pairs) == 1:
+            if len(p_pairs) == 0:
+                return []
+            elif len(p_pairs) == 1:
                 if p_pairs[0][1] < 0:
                     p_pairs = [(0, 1)] + p_pairs
                 else:
@@ -334,6 +336,8 @@ def chomatas_scan(
         peaks_plat = find_platforms(
             standardization(sum(frame_areas_gradient2) / len(frame_areas_gradient2)), frame_areas
         )
+        if not peaks_plat:
+            return []
         if debug:
             plt.figure(dpi=100)
             plt.imshow(img_bg, origin="lower")
