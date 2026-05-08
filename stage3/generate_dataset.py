@@ -140,19 +140,20 @@ class DataGenerator:
         # shape_type = classify_ellipsoidal_vs_fusiform(contour)  # "ellipsoidal" or "fusiform"
         shape_type = "ellipsoidal" if slopes == "convex" else "fusiform"
         ellipsoidal_classes = {
+            "lentoid": [0, 0.9],
             "prolate spherical": [0.9, 0.98],
             "spherical": [0.98, 1.05],
             "sub-spherical": [1.05, 1.11],
             "ellipsoidal": [1.11, 3],
             "elongate ellipsoidal": [3, 6],
-            "cylindrical": [6, 999],
+            "cylindrical": [6, float("inf")],
         }
         fusiform_classes = {
             "lentoid": [0, 0.75],
             "rhombus": [0.75, 1.3],
             "inflated fusiform": [1.3, 1.9],
             "fusiform": [1.9, 3.5],
-            "elongate fusiform": [3.5, 999],
+            "elongate fusiform": [3.5, float("inf")],
         }
         ratio2shape = ellipsoidal_classes if shape_type == "ellipsoidal" else fusiform_classes
         for shape, ratio_range in ratio2shape.items():

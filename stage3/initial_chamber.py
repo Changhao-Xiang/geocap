@@ -56,10 +56,13 @@ class ProloculusDetector:
                 center_y = row_idx + window_size // 2
                 center_x = col_idx + window_size // 2
 
-                # Calculate the distance to the center of the image
-                distance = np.sqrt(
-                    (center_x - self.block_width / 2) ** 2 + (center_y - self.block_height / 2) ** 2
-                )
+                # Calculate the distance from the candidate center (in image coords) to the
+                # midpoint between the image center and the prior center
+                abs_center_x = center_x + self.block_origin_x
+                abs_center_y = center_y + self.block_origin_y
+                ref_x = (self.width / 2 + self.prior_center[0]) / 2
+                ref_y = (self.height / 2 + self.prior_center[1]) / 2
+                distance = np.sqrt((abs_center_x - ref_x) ** 2 + (abs_center_y - ref_y) ** 2)
 
                 # Add the center coordinates to candidate_centers
                 candidate_centers.append((center_x, center_y, score, distance / self.block_width))
@@ -82,12 +85,15 @@ class ProloculusDetector:
         image_name = os.path.basename(image_path_to_detect)
         if rough_center is None and image_name in self.center_prior_dict:
             rough_center = self.center_prior_dict[image_name]
+        self.prior_center = rough_center if rough_center is not None else (self.width // 2, self.height // 2)
         self.img_center_block = self.get_search_block(rough_center)
 
         # Calculate score with different window size
         points_with_max_score = []
-        min_size, max_size = 16, 100
-        for size in range(min_size, min(self.block_height, max_size) + 1, 2):
+        block_short_edge = min(self.img_center_block.shape[:2])
+        min_size = max(3, int(block_short_edge * 0.01))
+        max_size = block_short_edge
+        for size in range(min_size, max_size + 1, 2):
             candidate_centers = self.find_center(window_size=size, threshold=threshold)
             if len(candidate_centers) > 0:
                 points_with_max_score.append(
@@ -123,8 +129,8 @@ class ProloculusDetector:
         return [x, y, diameter]
 
     def get_search_block(self, rough_center: tuple[int, int] | None = None):
-        self.block_height = self.height // self.block_num
-        self.block_width = self.width // self.block_num
+        self.block_height = max(1, self.height // self.block_num)
+        self.block_width = max(1, self.width // self.block_num)
 
         if rough_center is None:
             center_x, center_y = self.width // 2, self.height // 2
