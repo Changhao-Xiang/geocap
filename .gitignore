@@ -9,3 +9,6 @@ common/iterwrap.ckpt
 api_*.yaml
 eval_stage3/manual_fix_extractions.py
 tools/.*
+.python-version
+pyproject.toml
+uv.lock
