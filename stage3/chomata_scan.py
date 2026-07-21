@@ -248,10 +248,14 @@ def chomatas_scan(
             # mu = np.mean(unstd_data, axis=0)
             mu = 0
             sigma = np.max(abs(unstd_data))
+            if sigma == 0:
+                return np.zeros_like(unstd_data, dtype=np.float64)
             return (unstd_data - mu) / sigma
 
         def normalization(unnorm_data):
             _range = np.max(unnorm_data) - np.min(unnorm_data)
+            if _range == 0:
+                return np.zeros_like(unnorm_data, dtype=np.float64)
             return (unnorm_data - np.min(unnorm_data)) / _range
 
         def my_sigmoid_modified(s_x):
@@ -332,6 +336,9 @@ def chomatas_scan(
                 ip += 2
             p_pairs_final_merged.extend(temp)
             return p_pairs_final_merged
+
+        if not frame_areas_gradient2 or not frame_areas:
+            return []
 
         peaks_plat = find_platforms(
             standardization(sum(frame_areas_gradient2) / len(frame_areas_gradient2)), frame_areas

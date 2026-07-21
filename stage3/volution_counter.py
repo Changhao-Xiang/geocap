@@ -18,6 +18,10 @@ class VolutionCounter:
         filter_max_y_ratio: float = 0.01,
         max_adsorption_time: int = 7,
         use_initial_chamber: bool = True,
+        use_profile_fallback: bool = True,
+        profile_prominence: float = 0.02,
+        use_shape_adaptive_params: bool = True,
+        low_shell_ratio_threshold: float = 1.0,
     ):
         self.feat_recog_args = feat_recog_args
         self.width_ratio = width_ratio
@@ -30,12 +34,81 @@ class VolutionCounter:
         self.filter_max_y_ratio = filter_max_y_ratio
         self.max_adsorption_time = max_adsorption_time
         self.use_initial_chamber = use_initial_chamber
+        self.use_profile_fallback = getattr(feat_recog_args, "use_profile_fallback", use_profile_fallback)
+        self.profile_prominence = getattr(feat_recog_args, "profile_prominence", profile_prominence)
+        self.use_shape_adaptive_params = getattr(
+            feat_recog_args, "use_shape_adaptive_volution_params", use_shape_adaptive_params
+        )
+        self.low_shell_ratio_threshold = getattr(
+            feat_recog_args, "low_shell_ratio_threshold", low_shell_ratio_threshold
+        )
+        self.configure_shape_parameters(self.low_shell_ratio_threshold)
 
         self.finish = False  # tag for scanning process
+        self.detection_mode = "adsorption"
+
+    def get_shell_geometry(self, img_path: str) -> tuple[float, tuple[int, int, int, int]]:
+        """Reuse the project's alpha-contour detector to estimate shell proportions."""
+        orig_h, orig_w = self.original_shape
+        fallback = (orig_w / max(orig_h, 1), (0, 0, orig_w, orig_h))
+        try:
+            from stage3.get_angles_and_slope import find_contour
+
+            contour = find_contour(img_path)
+            if isinstance(contour, str) or len(contour) < 3:
+                return fallback
+            points = contour.reshape(-1, 2)
+            x, y = np.min(points, axis=0).astype(int)
+            max_x, max_y = np.max(points, axis=0).astype(int)
+            width, height = max_x - x, max_y - y
+            if width <= 0 or height <= 0:
+                return fallback
+            return width / height, (int(x), int(y), int(width), int(height))
+        except (IndexError, TypeError, ValueError, cv2.error):
+            return fallback
+
+    def configure_shape_parameters(self, shell_ratio: float) -> None:
+        """Condition scan and profile parameters without changing the counting axis."""
+        severity = 0.0
+        if self.use_shape_adaptive_params and shell_ratio < self.low_shell_ratio_threshold:
+            transition_width = max(0.25, self.low_shell_ratio_threshold * 0.5)
+            severity = float(np.clip((self.low_shell_ratio_threshold - shell_ratio) / transition_width, 0, 1))
+        self.shape_adaptation_severity = severity
+
+        # Low-ratio shells curve more strongly inside the same horizontal span.
+        # Use a narrow band to find peak anchors, then a wider and less rigid
+        # trace to recover the visible wall curvature.
+        self.profile_band_width_ratio = self.width_ratio * (1 - 0.5 * severity)
+        self.profile_trace_width_ratio = self.width_ratio * (1 + 0.5 * severity)
+        if self.use_shape_adaptive_params:
+            self.profile_min_distance_ratio = 0.025 + 0.025 * severity
+        else:
+            self.profile_min_distance_ratio = 0.05 if shell_ratio < 0.9 else 0.025
+        self.trace_search_radius = 2 + int(round(2 * severity))
+        self.trace_deviation_penalty = 0.08 - 0.05 * severity
+        self.trace_smoothing_sigma = 1.2 + 0.8 * severity
+
+        # Fixed 50-way splitting produces two- or three-pixel segments on a
+        # narrow shell. Fewer segments and a larger curvature tolerance make
+        # adsorption scores comparable to those of the usual elongated shells.
+        self.active_width_ratio = self.width_ratio * (1 + severity / 3)
+        self.active_num_segments = max(20, int(round(self.num_segments * (1 - 0.4 * severity))))
+        self.active_filter_max_y_ratio = self.filter_max_y_ratio * (1 + 3 * severity)
+        self.active_adsorption_thres = self.adsorption_thres - 0.08 * severity
+        self.active_volution_thres = self.volution_thres - 0.07 * severity
 
     def process_img(self, img_path: str):
         img_rgb = cv2.imread(img_path)
         orig_h, orig_w = img_rgb.shape[:2]
+        self.original_shape = (orig_h, orig_w)
+        self.shell_ratio, shell_bbox = self.get_shell_geometry(img_path)
+        self.configure_shape_parameters(self.shell_ratio)
+
+        # Keep a normalized grayscale image for the profile fallback. Unlike the
+        # adsorption image, it deliberately avoids morphology so fine and sparse
+        # spirothecae remain visible.
+        profile_img = resize_img(img_rgb.copy())
+        self.profile_gray = cv2.cvtColor(profile_img, cv2.COLOR_BGR2GRAY)
 
         # Opening preprocess and resize
         kernel = np.ones((3, 3), np.int8)
@@ -43,6 +116,13 @@ class VolutionCounter:
 
         img_rgb = resize_img(img_rgb)
         h, w = img_rgb.shape[:2]
+        box_x, box_y, box_width, box_height = shell_bbox
+        self.shell_bbox = (
+            box_x * w / orig_w,
+            box_y * h / orig_h,
+            box_width * w / orig_w,
+            box_height * h / orig_h,
+        )
 
         resized_center = (self.center[0] * w // orig_w, self.center[1] * h // orig_h)
         self.center = resized_center
@@ -59,6 +139,195 @@ class VolutionCounter:
 
         self.get_outer_volution()
 
+    @staticmethod
+    def smooth_profile(values: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+        """Smooth a one-dimensional profile without adding a scipy dependency."""
+        radius = max(1, int(round(3 * sigma)))
+        positions = np.arange(-radius, radius + 1, dtype=float)
+        kernel = np.exp(-(positions**2) / (2 * sigma**2))
+        kernel /= np.sum(kernel)
+        padded = np.pad(values.astype(float), radius, mode="reflect")
+        return np.convolve(padded, kernel, mode="valid")
+
+    @staticmethod
+    def find_profile_peaks(
+        profile: np.ndarray, start: int, end: int, min_distance: int, prominence: float
+    ) -> list[int]:
+        """Find separated local maxima with a local-prominence constraint."""
+        if end - start < 3:
+            return []
+
+        segment = profile[start:end]
+        prominence_window = max(12, int(0.08 * len(segment)))
+        candidates = []
+        for idx in range(1, len(segment) - 1):
+            value = segment[idx]
+            if value < segment[idx - 1] or value <= segment[idx + 1]:
+                continue
+
+            left = segment[max(0, idx - prominence_window) : idx + 1]
+            right = segment[idx : min(len(segment), idx + prominence_window + 1)]
+            local_prominence = value - max(float(np.min(left)), float(np.min(right)))
+            if local_prominence >= prominence:
+                candidates.append((local_prominence, value, idx + start))
+
+        # Non-maximum suppression keeps the more prominent response when two
+        # candidates represent the same thick spirotheca.
+        selected = []
+        for _, _, peak in sorted(candidates, reverse=True):
+            if all(abs(peak - saved_peak) >= min_distance for saved_peak in selected):
+                selected.append(peak)
+        return sorted(selected)
+
+    def balance_profile_peaks(
+        self,
+        profile: np.ndarray,
+        center_y: int,
+        min_distance: int,
+        upper_peaks: list[int],
+        lower_peaks: list[int],
+    ) -> tuple[list[int], list[int]]:
+        """Recover weak peaks only on the sparser side of the proloculus."""
+        counts = [len(upper_peaks), len(lower_peaks)]
+        if counts[0] == counts[1]:
+            return upper_peaks, lower_peaks
+
+        sparse_side = int(counts[1] < counts[0])
+        bounds = [(0, center_y), (center_y, len(profile))]
+        start, end = bounds[sparse_side]
+        relaxed_peaks = self.find_profile_peaks(
+            profile, start, end, min_distance, max(0.005, self.profile_prominence * 0.5)
+        )
+        old_gap = abs(counts[0] - counts[1])
+        relaxed_counts = counts.copy()
+        relaxed_counts[sparse_side] = len(relaxed_peaks)
+        if len(relaxed_peaks) > counts[sparse_side] and abs(relaxed_counts[0] - relaxed_counts[1]) < old_gap:
+            if sparse_side == 0:
+                upper_peaks = relaxed_peaks
+            else:
+                lower_peaks = relaxed_peaks
+        return upper_peaks, lower_peaks
+
+    def trace_profile_curve(
+        self, response: np.ndarray, anchor_y: int, x_start: int, x_end: int
+    ) -> list[tuple[int, int]]:
+        """Trace a smooth dark ridge left and right from a profile peak."""
+        h, w = response.shape
+        center_x = int(np.clip(self.center[0], x_start, x_end - 1))
+        refine_radius = 3
+        center_slice = response[
+            max(0, anchor_y - refine_radius) : min(h, anchor_y + refine_radius + 1),
+            max(x_start, center_x - 2) : min(x_end, center_x + 3),
+        ]
+        if center_slice.size:
+            row_scores = np.mean(center_slice, axis=1)
+            anchor_y = max(0, anchor_y - refine_radius) + int(np.argmax(row_scores))
+
+        def trace(x_values: list[int]) -> list[tuple[int, int]]:
+            points = []
+            cur_y = anchor_y
+            for x in x_values:
+                candidates = range(
+                    max(0, cur_y - self.trace_search_radius), min(h, cur_y + self.trace_search_radius + 1)
+                )
+                best_y = max(
+                    candidates,
+                    key=lambda y: float(response[y, x]) - self.trace_deviation_penalty * abs(y - cur_y),
+                )
+                cur_y = best_y
+                points.append((x, cur_y))
+            return points
+
+        left = trace(list(range(center_x, x_start - 1, -1)))
+        right = trace(list(range(center_x + 1, x_end)))
+        points = list(reversed(left)) + right
+        if len(points) < 5:
+            return points
+
+        # A short moving average suppresses pixel-scale zig-zags while retaining
+        # the shallow curvature expected in the central band.
+        y_values = np.array([point[1] for point in points], dtype=float)
+        smoothed_y = self.smooth_profile(y_values, sigma=self.trace_smoothing_sigma)
+        return [(point[0], int(round(y))) for point, y in zip(points, smoothed_y)]
+
+    def get_profile_volutions(self) -> tuple[list[list[list[tuple[int, int]]]], list[list[float]]]:
+        """Detect all central spirotheca candidates from a radial darkness profile."""
+        gray = cv2.GaussianBlur(self.profile_gray, (5, 5), 0)
+        h, w = gray.shape
+        center_x, center_y = self.center
+        shell_width = self.shell_bbox[2] if self.shape_adaptation_severity > 0 else w
+        band_half_width = max(6, int(self.profile_band_width_ratio * 0.5 * shell_width))
+        band_x_start = max(0, center_x - band_half_width)
+        band_x_end = min(w, center_x + band_half_width + 1)
+        trace_half_width = max(12, int(self.profile_trace_width_ratio * 0.5 * shell_width))
+        trace_x_start = max(0, center_x - trace_half_width)
+        trace_x_end = min(w, center_x + trace_half_width + 1)
+        if band_x_end - band_x_start < 3 or trace_x_end - trace_x_start < 3:
+            return [[], []], [[], []]
+
+        band = gray[:, band_x_start:band_x_end].astype(float) / 255
+        profile = self.smooth_profile(1 - np.mean(band, axis=1), sigma=2.0)
+        profile_range = float(np.ptp(profile))
+        if profile_range <= 1e-6:
+            return [[], []], [[], []]
+        profile = (profile - np.min(profile)) / profile_range
+
+        min_distance = max(4, int(self.profile_min_distance_ratio * h))
+        upper_peaks = self.find_profile_peaks(profile, 0, center_y, min_distance, self.profile_prominence)
+        lower_peaks = self.find_profile_peaks(profile, center_y, h, min_distance, self.profile_prominence)
+        upper_peaks, lower_peaks = self.balance_profile_peaks(
+            profile, center_y, min_distance, upper_peaks, lower_peaks
+        )
+
+        darkness = 1 - gray.astype(float) / 255
+        vertical_gradient = np.abs(cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3))
+        gradient_scale = float(np.percentile(vertical_gradient, 95))
+        if gradient_scale > 1e-6:
+            vertical_gradient = np.clip(vertical_gradient / gradient_scale, 0, 1)
+        response = cv2.GaussianBlur(0.6 * darkness + 0.4 * vertical_gradient, (3, 3), 0)
+        profile_volutions = [[], []]
+        profile_thickness = [[], []]
+        for side, peaks in enumerate([upper_peaks, list(reversed(lower_peaks))]):
+            for peak in peaks:
+                curve = self.trace_profile_curve(response, peak, trace_x_start, trace_x_end)
+                if len(curve) < 5:
+                    continue
+                profile_volutions[side].append(curve)
+
+                half_height = profile[peak] - max(self.profile_prominence, 0.02) / 2
+                top = peak
+                while top > 0 and profile[top] > half_height:
+                    top -= 1
+                bottom = peak
+                while bottom < h - 1 and profile[bottom] > half_height:
+                    bottom += 1
+                profile_thickness[side].append(float(max(1, bottom - top)))
+
+        return profile_volutions, profile_thickness
+
+    def should_use_profile_fallback(self, profile_volutions: list[list[list[tuple[int, int]]]]) -> bool:
+        """Use the fallback only for out-of-distribution image regimes."""
+        if not self.use_profile_fallback:
+            return False
+
+        orig_h, orig_w = self.original_shape
+        shell_ratio = getattr(self, "shell_ratio", orig_w / max(orig_h, 1))
+        black_ratio = float(np.mean(self.img_gray == 0))
+        edge_ratio = float(np.mean(cv2.Canny(self.profile_gray, 50, 150) > 0))
+        laplacian_variance = float(cv2.Laplacian(self.profile_gray, cv2.CV_64F).var())
+        out_of_distribution = (
+            shell_ratio < 1.2
+            or min(orig_h, orig_w) >= 400
+            or black_ratio > 0.45
+            or edge_ratio > 0.18
+            or laplacian_variance > 1000
+        )
+        if not out_of_distribution:
+            return False
+
+        counts = [len(side) for side in profile_volutions]
+        return min(counts) >= 2 and max(counts) <= 14 and abs(counts[0] - counts[1]) <= 4
+
     def set_scan_direction(self, line: list[tuple[int, int]]):
         self.direction = np.sign(self.center[1] - line[0][1])
 
@@ -70,7 +339,9 @@ class VolutionCounter:
         y_top = int(np.min(np.where(img_gray[:, x_mid] == 0)[0]))
         y_bottom = int(np.max(np.where(img_gray[:, x_mid] == 0)[0]))
 
-        mid_img_width = int(self.width_ratio * 0.5 * w)
+        shell_width = self.shell_bbox[2] if self.shape_adaptation_severity > 0 else w
+        mid_img_width = int(self.active_width_ratio * 0.5 * shell_width)
+        mid_img_width = min(mid_img_width, x_mid, w - x_mid - 1)
 
         line_upper = [(x_mid, y_top)]
         line_lower = [(x_mid, y_bottom)]
@@ -98,12 +369,12 @@ class VolutionCounter:
         for x, y in points:
             if self.img_gray[y, x] == 0:
                 indensity += 1
-        return indensity / len(points) > self.adsorption_thres
+        return indensity / len(points) > self.active_adsorption_thres
 
     def is_volution(self, check_adsorption_mask: list[bool]) -> bool:
         if check_adsorption_mask:
             adsorption_rate = sum(check_adsorption_mask) / len(check_adsorption_mask)
-            return adsorption_rate > self.volution_thres
+            return adsorption_rate > self.active_volution_thres
         else:
             self.finish = True
             return False
@@ -169,7 +440,7 @@ class VolutionCounter:
     ):
         y_means = np.array([np.mean([point[1] for point in segment]) for segment in line_segments])
         ref_y = np.median(y_means)
-        filter_max_y = self.filter_max_y_ratio * self.img_gray.shape[1]
+        filter_max_y = self.active_filter_max_y_ratio * self.img_gray.shape[1]
 
         filtered_segments = []
         filtered_step_forward = []
@@ -326,7 +597,7 @@ class VolutionCounter:
                 new_line.extend(bresenham(p1, p2))
 
             new_line.extend(bresenham(p2, line_segments[-1][-1]))
-            line_segments = split_into_segments(new_line, self.num_segments)
+            line_segments = split_into_segments(new_line, self.active_num_segments)
         return line_segments
 
     def reach_step_limit(self, step_forward: list[int]) -> bool:
@@ -423,7 +694,7 @@ class VolutionCounter:
         for i, line in enumerate([self.line_upper, self.line_lower]):
             self.set_scan_direction(line)
             self.finish = False
-            line_segments = split_into_segments(line, self.num_segments)
+            line_segments = split_into_segments(line, self.active_num_segments)
             line_segments, _ = self.filter_segments(line_segments)
             line_segments = self.update_line_segments(line_segments)
 
@@ -455,6 +726,14 @@ class VolutionCounter:
                 line_segments = self.update_line_segments(line_segments)
                 line_segments = self.expand_line_segments(line_segments, len(volutions[i]))
                 line_segments = self.update_line_segments(line_segments)
+
+        profile_volutions, profile_thickness = self.get_profile_volutions()
+        if self.should_use_profile_fallback(profile_volutions):
+            volutions = profile_volutions
+            thickness_per_vol = profile_thickness
+            self.detection_mode = "profile"
+        else:
+            self.detection_mode = "adsorption"
 
         # Return relative values
         h, w = self.img_gray.shape

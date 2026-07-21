@@ -16,7 +16,11 @@ from stage3.volution_counter import VolutionCounter
 """
 
 
-def recognize_feature(img_path: str, center_prior_jsonl: str | None = None) -> tuple:
+def recognize_feature(
+    img_path: str,
+    center_prior_jsonl: str = "dataset/annotated-openai-gpt-5.2-25.jsonl",
+    return_diagnostics: bool = False,
+) -> tuple:
     img_rgb = cv2.imread(img_path)
     orig_h, orig_w = img_rgb.shape[:2]
     # Opening preprocess and resize
@@ -57,6 +61,19 @@ def recognize_feature(img_path: str, center_prior_jsonl: str | None = None) -> t
     chomata_result = chomatas_scan(volutions_dict, img_path, initial_chamber=center)
     tunnel_angles = calculate_tunnel_angles(chomata_result, center)
     tunnel_angles = dict(sorted(tunnel_angles.items(), key=lambda x: x[0]))
+
+    if return_diagnostics:
+        diagnostics = {
+            "volution_detection_mode": volution_counter.detection_mode,
+            "shell_ratio": volution_counter.shell_ratio,
+            "shape_adaptation_severity": volution_counter.shape_adaptation_severity,
+            "recognition_center_x": center[0],
+            "recognition_center_y": center[1],
+            "initial_chamber_detected": initial_chamber is not None,
+            "volution_points": volutions_dict,
+            "chomata_result": chomata_result,
+        }
+        return volutions_dict, thickness_dict, initial_chamber, tunnel_angles, diagnostics
 
     return volutions_dict, thickness_dict, initial_chamber, tunnel_angles
 

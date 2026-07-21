@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from common.args import feat_recog_args
-from stage3.utils import circle_weight_array
 
 
 class ProloculusDetector:
@@ -31,45 +30,68 @@ class ProloculusDetector:
 
         return center_prior_dict
 
-    def find_center(self, window_size: int, threshold: float = 0.25):
-        # Find center of proloculus using sliding window
-        img_array = self.img_center_block
-        windows = np.lib.stride_tricks.sliding_window_view(img_array, (window_size, window_size))
-        windows = windows.reshape(-1, window_size, window_size)
+    @staticmethod
+    def get_score_kernel(window_size: int) -> np.ndarray:
+        """Build the same circular reward kernel as the scalar sliding-window implementation."""
+        coordinates = np.arange(window_size, dtype=np.float64)
+        rows, columns = np.meshgrid(coordinates, coordinates, indexing="ij")
+        center = (window_size - 1) / 2
+        distance = np.hypot(rows - center, columns - center) / window_size
+        outer_radius = (window_size // 2) / window_size
+        inner_radius = (window_size // 2) * feat_recog_args.inner_radius_ratio / window_size
 
-        pos_weight_array, neg_weight_array, total_positive_weight, total_negative_weight = (
-            circle_weight_array(window_size)
+        positive_mask = distance <= inner_radius
+        negative_mask = (distance > inner_radius) & (distance <= outer_radius)
+        positive_weights = np.zeros_like(distance)
+        negative_weights = np.zeros_like(distance)
+        positive_weights[positive_mask] = 0.5 * (1 + np.exp(-10 * distance[positive_mask]))
+        negative_weights[negative_mask] = -0.5 * np.exp(-10 * (distance[negative_mask] - inner_radius))
+
+        total_positive_weight = float(np.sum(positive_weights))
+        total_negative_weight = float(abs(np.sum(negative_weights)))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return positive_weights / total_positive_weight + negative_weights / (3 * total_negative_weight)
+
+    def find_center(self, window_size: int, threshold: float = 0.25, max_candidates: int | None = None):
+        """Find proloculus candidates using vectorized, valid-window correlation."""
+        img_array = self.img_center_block.astype(np.float64) / 255
+        valid_height = img_array.shape[0] - window_size + 1
+        valid_width = img_array.shape[1] - window_size + 1
+        if valid_height <= 0 or valid_width <= 0:
+            return []
+
+        kernel = self.get_score_kernel(window_size)
+        anchor = window_size // 2
+        response = cv2.filter2D(
+            img_array, cv2.CV_64F, kernel, anchor=(anchor, anchor), borderType=cv2.BORDER_CONSTANT
         )
-        candidate_centers = []
-        for i, window in enumerate(windows):
-            # Calculate the score of the window
-            pos_score = np.sum(window / 255 * pos_weight_array) / total_positive_weight
-            neg_score = np.sum(window / 255 * neg_weight_array) / (3 * total_negative_weight)
-            score = pos_score + neg_score
+        score_map = response[anchor : anchor + valid_height, anchor : anchor + valid_width]
+        row_indices, column_indices = np.nonzero(score_map > threshold)
+        if len(row_indices) == 0:
+            return []
 
-            if score > threshold:
-                # Calculate the row and column indices from the flattened index
-                row_idx = i // (img_array.shape[1] - window_size + 1)
-                col_idx = i % (img_array.shape[1] - window_size + 1)
+        scores = score_map[row_indices, column_indices]
+        center_x = column_indices + anchor
+        center_y = row_indices + anchor
+        abs_center_x = center_x + self.block_origin_x
+        abs_center_y = center_y + self.block_origin_y
+        ref_x = (self.width / 2 + self.prior_center[0]) / 2
+        ref_y = (self.height / 2 + self.prior_center[1]) / 2
+        distances = np.hypot(abs_center_x - ref_x, abs_center_y - ref_y) / self.block_width
+        rankings = scores - distances
 
-                # Calculate the center coordinates of the window
-                center_y = row_idx + window_size // 2
-                center_x = col_idx + window_size // 2
+        if max_candidates == 1:
+            order = np.array([int(np.argmax(rankings))])
+        elif max_candidates is not None and len(rankings) > max_candidates:
+            order = np.argpartition(-rankings, max_candidates - 1)[:max_candidates]
+            order = order[np.argsort(-rankings[order], kind="stable")]
+        else:
+            order = np.argsort(-rankings, kind="stable")
 
-                # Calculate the distance from the candidate center (in image coords) to the
-                # midpoint between the image center and the prior center
-                abs_center_x = center_x + self.block_origin_x
-                abs_center_y = center_y + self.block_origin_y
-                ref_x = (self.width / 2 + self.prior_center[0]) / 2
-                ref_y = (self.height / 2 + self.prior_center[1]) / 2
-                distance = np.sqrt((abs_center_x - ref_x) ** 2 + (abs_center_y - ref_y) ** 2)
-
-                # Add the center coordinates to candidate_centers
-                candidate_centers.append((center_x, center_y, score, distance / self.block_width))
-
-        candidate_centers = sorted(candidate_centers, key=lambda x: x[2] - x[3], reverse=True)
-
-        return candidate_centers
+        return [
+            (int(center_x[index]), int(center_y[index]), float(scores[index]), float(distances[index]))
+            for index in order
+        ]
 
     def detect_initial_chamber(
         self,
@@ -91,10 +113,12 @@ class ProloculusDetector:
         # Calculate score with different window size
         points_with_max_score = []
         block_short_edge = min(self.img_center_block.shape[:2])
-        min_size = max(3, int(block_short_edge * 0.01))
+        min_size = max(3, int(block_short_edge * 0.08))
         max_size = block_short_edge
         for size in range(min_size, max_size + 1, 2):
-            candidate_centers = self.find_center(window_size=size, threshold=threshold)
+            candidate_centers = self.find_center(
+                window_size=size, threshold=threshold, max_candidates=3 if visualize_result else 1
+            )
             if len(candidate_centers) > 0:
                 points_with_max_score.append(
                     {

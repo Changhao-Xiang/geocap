@@ -276,6 +276,21 @@ class FeatureRecognizeArgs:
         metadata={"help": "parameters for cv2.HoughCircles: dp, minDist, param1, param2"},
     )
     volution_thres: float = field(default=0.85, metadata={"help": "threshold for volution detection"})
+    use_profile_fallback: bool = field(
+        default=True, metadata={"help": "use a radial-profile fallback for out-of-distribution fossil images"}
+    )
+    profile_prominence: float = field(
+        default=0.02,
+        metadata={"help": "minimum normalized prominence for radial-profile volution candidates"},
+    )
+    use_shape_adaptive_volution_params: bool = field(
+        default=True,
+        metadata={"help": "adapt volution parameters to the fossil contour length-to-width ratio"},
+    )
+    low_shell_ratio_threshold: float = field(
+        default=1.0,
+        metadata={"help": "contour length-to-width ratio below which low-ratio parameters are used"},
+    )
 
     fossil_data_path: str = field(default="dataset/common")
     num_replace_llm: str = field(default="qwen25-14")

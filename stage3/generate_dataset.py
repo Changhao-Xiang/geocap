@@ -7,8 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 from common.args import caption_args, feat_recog_args, logger
-from common.llm import generator_mapping, model_path_mapping
-from data.caption.paraphrase import Paraphraser
+from stage3.feature_classification import classify_coil_tightness, classify_size
 from stage3.get_angles_and_slope import get_angles_and_slope
 from stage3.recognize import recognize_feature
 from stage3.reorder_tag import reorder_tag
@@ -33,6 +32,8 @@ class DataGenerator:
         self.loaded_llm = False
 
     def load_llm_generator(self):
+        from common.llm import generator_mapping, model_path_mapping
+
         assert not self.loaded_llm
         # Initialize llm
         model_name, model_id = feat_recog_args.num_replace_llm.split("-", 1)
@@ -90,28 +91,35 @@ class DataGenerator:
         # Calculate length and width/diameter (in mm. ) and ratio
         new_image_info["length"] = (x_max - x_min) * image_info["pixel_mm"]
         new_image_info["width"] = (y_max - y_min) * image_info["pixel_mm"]
+        new_image_info["area"] = np.count_nonzero(img_countour) * image_info["pixel_mm"] ** 2
         if new_image_info["width"] == 0:
             print(image_info)
         new_image_info["ratio"] = new_image_info["length"] / new_image_info["width"]
 
-        # Classify size by length
-        if new_image_info["length"] < 1:
-            new_image_info["size"] = "minute"
-        elif new_image_info["length"] < 3:
-            new_image_info["size"] = "small"
-        elif new_image_info["length"] < 6:
-            new_image_info["size"] = "medium"
-        elif new_image_info["length"] < 10:
-            new_image_info["size"] = "large"
-        elif new_image_info["length"] < 20:
-            new_image_info["size"] = "mega"
-        else:
-            new_image_info["size"] = "gigantic"
+        new_image_info["size"] = classify_size(new_image_info["area"])
 
         # Get equator, slope and poles
         angles_and_scores = get_angles_and_slope(img_path)
         left_angle, right_angle, upper_angle, lower_angle = angles_and_scores[:4]
+        angle_names = ("left", "right", "upper", "lower")
+        for name, angle in zip(angle_names, angles_and_scores[:4]):
+            new_image_info[f"{name}_angle_deg"] = float(np.degrees(angle))
+        slope_names = ("lu", "ru", "ld", "rd")
+        raw_slope_scores = []
+        for score in angles_and_scores[4:]:
+            try:
+                raw_slope_scores.append(float(score))
+            except (TypeError, ValueError):
+                raw_slope_scores.append(None)
+        valid_slope_scores = [score for score in raw_slope_scores if score is not None]
+        fallback_slope_score = float(np.mean(valid_slope_scores)) if valid_slope_scores else 0.0
+        slope_scores = [fallback_slope_score if score is None else score for score in raw_slope_scores]
+        new_image_info["slope_score_imputed"] = any(score is None for score in raw_slope_scores)
+        for name, score in zip(slope_names, slope_scores):
+            new_image_info[f"slopes_score_{name}"] = score
+
         equator_angle = (upper_angle + lower_angle) / 2
+        new_image_info["equator_angle_deg"] = float(np.degrees(equator_angle))
         if equator_angle < 2.95:
             equator = "convex"
         elif equator_angle < 3.15:
@@ -121,13 +129,15 @@ class DataGenerator:
         new_image_info["equator"] = equator
 
         poles_angle = (left_angle + right_angle) / 2
+        new_image_info["poles_angle_deg"] = float(np.degrees(poles_angle))
         if poles_angle < 2.35:
             poles = "pointed"
         else:
             poles = "blunted"
         new_image_info["poles"] = poles
 
-        slopes_score = np.sum(angles_and_scores[4:])
+        slopes_score = np.sum(slope_scores)
+        new_image_info["slopes_score"] = float(slopes_score)
         if slopes_score < -2.3:
             slopes = "convex"
         elif slopes_score < -0.8:
@@ -163,11 +173,16 @@ class DataGenerator:
 
         if use_vis_tools:
             # Recognize fossil features
-            volutions_dict, thickness_dict, initial_chamber, tunnel_angles = recognize_feature(img_path)
+            volutions_dict, thickness_dict, initial_chamber, tunnel_angles, diagnostics = recognize_feature(
+                img_path, return_diagnostics=True
+            )
+            new_image_info.update(diagnostics)
 
             # Process numerical info
             num_positive_keys = len([k for k in volutions_dict.keys() if k > 0])
             num_negative_keys = len([k for k in volutions_dict.keys() if k < 0])
+            new_image_info["num_volutions_upper"] = num_positive_keys
+            new_image_info["num_volutions_lower"] = num_negative_keys
             larger_key, smaller_key = max(num_positive_keys, num_negative_keys), min(
                 num_positive_keys, num_negative_keys
             )
@@ -189,11 +204,15 @@ class DataGenerator:
                 elif idx < 0 and idx + 1 in volutions_dict:
                     next_points = volutions_dict[idx + 1]
                 elif idx == 1:
+                    if initial_chamber is None:
+                        continue
                     initial_chamber_upper = get_circle_points(
                         center=initial_chamber[:2], radius=initial_chamber[2] // 2, angle_range=[225, 315]
                     )
                     next_points = initial_chamber_upper
                 elif idx == -1:
+                    if initial_chamber is None:
+                        continue
                     initial_chamber_lower = get_circle_points(
                         center=initial_chamber[:2], radius=initial_chamber[2] // 2, angle_range=[45, 135]
                     )
@@ -210,10 +229,20 @@ class DataGenerator:
             # Sort volution_heights by key in ascending order
             volution_heights = dict(sorted(volution_heights.items(), key=lambda item: item[0]))
             new_image_info["volution_heights"] = volution_heights
+            new_image_info["volution_heights_micron"] = {
+                idx: height * image_info["pixel_mm"] * 1000 for idx, height in volution_heights.items()
+            }
+            coil_tightness, coil_tightness_ratio = classify_coil_tightness(volution_heights.values())
+            new_image_info["coil_tightness"] = coil_tightness
+            new_image_info["coil_tightness_ratio"] = coil_tightness_ratio
 
             # Calculate average thickness and thickness per volutions
-            avg_thickness = np.mean([thickness for thickness in thickness_dict.values()])
+            thickness_values = list(thickness_dict.values())
+            avg_thickness = np.mean(thickness_values) if thickness_values else 0.0
             new_image_info["avg_thickness"] = avg_thickness * h
+            new_image_info["avg_thickness_micron"] = (
+                new_image_info["avg_thickness"] * image_info["pixel_mm"] * 1000
+            )
             thickness_per_vol = {}
             for idx, thickness in thickness_dict.items():
                 if abs(idx) not in thickness_per_vol:
@@ -222,17 +251,24 @@ class DataGenerator:
                     thickness_per_vol[abs(idx)] = (thickness_per_vol[abs(idx)] + thickness * h) / 2
             thickness_per_vol = dict(sorted(thickness_per_vol.items(), key=lambda item: item[0]))
             new_image_info["thickness_per_vol"] = thickness_per_vol
+            new_image_info["thickness_per_vol_micron"] = {
+                idx: thickness * image_info["pixel_mm"] * 1000 for idx, thickness in thickness_per_vol.items()
+            }
 
             if initial_chamber is not None:
                 # Convert to diameter
+                new_image_info["initial_chamber_x"] = initial_chamber[0]
+                new_image_info["initial_chamber_y"] = initial_chamber[1]
+                new_image_info["initial_chamber_diameter_px"] = initial_chamber[2]
                 new_image_info["size_init_chamber"] = initial_chamber[2] * image_info["pixel_mm"] * 1000
 
             tunnel_angles = self.post_process_tunnel_angles(
                 tunnel_angles, int(new_image_info["num_volutions"])
             )
+            new_image_info["tunnel_angles"] = tunnel_angles
 
             # Average tunnel angles by volutions
-            tunnel_angle = int(sum(tunnel_angles.values()) / len(tunnel_angles))
+            tunnel_angle = int(sum(tunnel_angles.values()) / len(tunnel_angles)) if tunnel_angles else 0
             new_image_info["tunnel_angle"] = tunnel_angle
 
         return new_image_info
@@ -240,6 +276,9 @@ class DataGenerator:
     def post_process_tunnel_angles(
         self, tunnel_angles: dict, num_volutions: int, low_thres: int = 15, high_thres: int = 55
     ) -> dict:
+        if num_volutions <= 0:
+            return {}
+
         # Add default value if fail to detect
         for i in range(1, num_volutions + 1):
             if i not in tunnel_angles:
@@ -294,6 +333,8 @@ class DataGenerator:
         instruction += f"length: {image_info['length']:.3f} mm. , width(diameter): {image_info['width']:.3f} mm. ratio: {image_info['ratio']:.3f}\n"
         # number of volutions
         instruction += f"number of volutions(whorls): {image_info['num_volutions']}\n"
+        if image_info.get("coil_tightness"):
+            instruction += f"coil tightness: {image_info['coil_tightness']}\n"
 
         # thickness of spirotheca
         instruction += f"average thickness of spirotheca: {int(image_info['avg_thickness'] * image_info['pixel_mm'] * 1000)} microns\n"
@@ -419,6 +460,8 @@ def generate_dataset(start_pos=None, end_pos=None, use_vis_tools: bool = True):
 
 
 def paraphrase(start_pos=None, end_pos=None):
+    from data.caption.paraphrase import Paraphraser
+
     paraphraser = Paraphraser()
     # Read original captions
     if start_pos is not None and end_pos is not None:
@@ -447,6 +490,8 @@ def paraphrase(start_pos=None, end_pos=None):
 
 
 def tag_format(start_pos=None, end_pos=None):
+    from data.caption.paraphrase import Paraphraser
+
     caption_args.paraphrase_prompt_dir = "stage3/prompts/tag_format.txt"
     paraphraser = Paraphraser()
     # Read original captions
@@ -480,6 +525,8 @@ def tag_format(start_pos=None, end_pos=None):
 
 
 def add_default_value(start_pos=None, end_pos=None):
+    from data.caption.paraphrase import Paraphraser
+
     caption_args.paraphrase_prompt_dir = "stage3/prompts/add_default_value.txt"
     paraphraser = Paraphraser()
     # Read original captions
