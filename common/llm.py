@@ -70,7 +70,7 @@ class APIGenerator(LLMGenerator):
         key_info: dict[str, str] = yaml.safe_load(open(run_args.api_key_file, "r"))
         url = key_info["base_url"] + "/chat/completions"
         self.url = url[:8] + url[8:].replace("//", "/")  # skip the first 8 characters containing "https://"
-        print(key_info)
+        logger.info(f"Using API endpoint {key_info['base_url']} with model {model}")
         self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key_info['api_key']}"}
         self.temperature = kwargs.get("temperature", 0.2)
         self.max_tokens = kwargs.get("max_tokens", 512)

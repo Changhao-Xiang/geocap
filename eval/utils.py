@@ -72,6 +72,32 @@ def find_first_json_block(text: str) -> tuple[str, str]:
     raise ValueError("No JSON block found")
 
 
+_ENGLISH_NUMBER_WORDS = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+    "eleven": "11", "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15",
+}
+
+
+def _replace_english_number_words(text: str) -> str:
+    number_word_pattern = "|".join(_ENGLISH_NUMBER_WORDS.keys())
+    mixed_half_pattern = re.compile(
+        rf"\b({number_word_pattern})\s+and\s+(?:one[\s-]+half|a\s+half)\b",
+        flags=re.IGNORECASE,
+    )
+
+    def replace_mixed_half(match: re.Match) -> str:
+        whole = float(_ENGLISH_NUMBER_WORDS[match.group(1).lower()])
+        return str(whole + 0.5)
+
+    text = mixed_half_pattern.sub(replace_mixed_half, text)
+    text = re.sub(r"\b(?:one[\s-]+half|a\s+half)\b", "0.5", text, flags=re.IGNORECASE)
+    text = text.replace("½", "0.5")
+
+    pattern = r"\b(" + "|".join(_ENGLISH_NUMBER_WORDS.keys()) + r")\b"
+    return re.sub(pattern, lambda m: _ENGLISH_NUMBER_WORDS[m.group(0).lower()], text, flags=re.IGNORECASE)
+
+
 def extract_range_or_num(text: str) -> list[float] | str:
     """
     Extract numerical ranges from text strings, with unit conversion.
@@ -81,11 +107,28 @@ def extract_range_or_num(text: str) -> list[float] | str:
     - "120 to 340 μm" -> [0.12, 0.34]  # converted to mm
     - "2.8-3.5, more frequently 3.0" -> [2.8, 3.5]
     - "near 1.5 in the first volution, increasing to near 2.5 at maturity" -> [1.5, 2.5]
+    - "seven" -> [7.0]
+    - "five and one-half to six" -> [5.5, 6.0]
+    - "four and one-half to five, rarely up to six" -> [4.5, 5.0, 6.0]
+    - "190u" -> [0.19]  # bare 'u' right after a digit is treated as micrometers
 
     Returns a list of floats representing the range in mm, or an empty list if no range is found.
     """
-    # Check if the text contains micrometer units
-    is_micrometer = bool(re.search(r"(?:μ|\u03bc|microns?)", text))
+    # Normalize English number words (e.g. "seven" -> "7") so downstream regexes match.
+    text = _replace_english_number_words(text)
+
+    # Check if the text contains micrometer units. A bare "u" right after a number
+    # (e.g. "190u") is a common shorthand for microns in fusulinid descriptions.
+    is_micrometer = bool(re.search(r"(?:μ|\u03bc|microns?|\d\s?u\b)", text))
+
+    def convert_units(values: list[float]) -> list[float]:
+        return [value * 0.001 if is_micrometer else value for value in values]
+
+    def include_rare_upper_bound(values: list[float]) -> list[float]:
+        rare_match = re.search(r"\brarely\s+(?:up\s+)?to\s+(\d+\.?\d*)", text)
+        if rare_match:
+            values.append(float(rare_match.group(1)))
+        return values
 
     # Pattern for ratio format (e.g., "1:2.0, 1:2.5")
     ratio_pattern = r"1:(\d+\.?\d*)"
@@ -106,34 +149,34 @@ def extract_range_or_num(text: str) -> list[float] | str:
     match = re.search(hyphen_pattern, text)
     if match:
         values = [float(match.group(1)), float(match.group(2))]
-        return [v * 0.001 if is_micrometer else v for v in values]
+        return convert_units(include_rare_upper_bound(values))
 
     # Pattern for ranges with "to" (e.g., "3.8 to 5.7 mm")
     to_pattern = r"(\d+\.?\d*)\s+to\s+(\d+\.?\d*)"
     match = re.search(to_pattern, text)
     if match:
         values = [float(match.group(1)), float(match.group(2))]
-        return [v * 0.001 if is_micrometer else v for v in values]
+        return convert_units(include_rare_upper_bound(values))
 
     # Pattern for ranges with "or" (e.g., "6 or 7 mm")
     or_pattern = r"(\d+\.?\d*)\s+or\s+(\d+\.?\d*)"
     match = re.search(or_pattern, text)
     if match:
         values = [float(match.group(1)), float(match.group(2))]
-        return [v * 0.001 if is_micrometer else v for v in values]
+        return convert_units(values)
 
     # Pattern for "near X, increasing to near Y" type ranges
     near_pattern = r"near\s+(\d+\.?\d*).*?(?:increasing|decreasing)\s+to\s+(?:near\s+)?(\d+\.?\d*)"
     match = re.search(near_pattern, text)
     if match:
         values = [float(match.group(1)), float(match.group(2))]
-        return [v * 0.001 if is_micrometer else v for v in values]
+        return convert_units(values)
 
     # If no range is found, try to extract single numbers
     numbers = re.findall(r"(\d+\.?\d*)", text)
     if len(numbers):
         values = [float(number) for number in numbers]
-        return [v * 0.001 if is_micrometer else v for v in values]
+        return convert_units(values)
 
     return "no number found"
 

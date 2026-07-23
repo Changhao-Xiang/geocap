@@ -306,9 +306,12 @@ class FossilEvalArgs:
     eval_llm: str = field(default="qwen25-14")
     eval_result_dir: str = field(default="eval_data/deepseek_eval/internvl")
     eval_reference_file: str = field(default="eval_data/deepseek_eval/extracted_reference_info.json")
+    eval_reference_desc_file: str = field(default="")
+    eval_output_file: str = field(default="")
     eval_origin_file: str = field(default="eval_data/origin_files/internvl.json")
     eval_start_pos: int = field(default=0)
     eval_end_pos: int = field(default=20000)
+    eval_extract_max_retries: int = field(default=3)
 
     foscap_model_path: str = field(default="internvl_chat/work_dirs/foscap/foscap_final")
 

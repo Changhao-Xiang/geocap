@@ -2,7 +2,7 @@
 You are provided with a description of a fossil image. You need to extract specific features from the description and output in pure JSON format. 2 examples are provided to help you understand the task.
 
 ## Requirements
-1. Extract EXACTLY these 15 features (case-sensitive keys):
+1. Extract EXACTLY these 19 features (case-sensitive keys):
 - size
 - shape
 - equator
@@ -24,7 +24,7 @@ You are provided with a description of a fossil image. You need to extract speci
 - axial_filling
 
 2. Extraction Guidelines:
-- Don't extract one certain kind information more than once; also, one sentence should be extracted into only one specific feature
+- Each piece of descriptive text should be assigned to the single most relevant feature. If one sentence covers multiple features, extract the relevant portions to their respective fields.
 - Convert the word-described number into digits, e.g. 'one' -> 1
 - If conflicting information arises, retain the more accurate one with smaller data range
 - Preserve original measurements/descriptions verbatim
@@ -41,12 +41,12 @@ You are provided with a description of a fossil image. You need to extract speci
 - Never invent missing data
 - Never modify provided measurements
 - Never rearrange key order
+- Never add extra information, if the information is not given
 
 ## Output Format Requirements
 1. Pure JSON only - no markdown/text formatting
 2. Empty string ("") for missing information
 3. Maintain exact key order as specified
-4. Ignore conflicting information
 
 ## Example 1:
 
@@ -66,7 +66,7 @@ Test large, rhomboid in outline, concave in middle on one side and convex on ano
     "ratio": "3.72",
     "axis_shape": "sinuous",
     "number_of_volutions": "8-10",
-    "coil_tightness": "inner 4-5 volutions tightly involute and successive ones loosing gradually"
+    "coil_tightness": "inner 4-5 volutions tightly involute and successive ones loosing gradually",
     "height_of_volution": "",
     "thickness_of_spirotheca": "very thin in tightly coiled inner volutions, about 0.008-0.01 mm thick; thickening outwards",
     "septa": "plane and straight in the inner volutions, and completely fluted in the outer volutions; flutings broadly rounded in general, sometimes reaching the top of the chambers in height",

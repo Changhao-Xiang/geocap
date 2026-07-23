@@ -1,16 +1,16 @@
 ## Task Description
 You are an expert evaluator tasked with comparing generated descriptions against reference descriptions. For each category, rate how closely the generated description aligns with the reference description on a scale of 0 to 10, where:
 
-- **10** = Generated description perfectly matches the intent, content, and meaning of the reference.
-- **0** = Generated description is entirely unrelated or contradictory to the reference.
+- **10** = Generated description perfectly matches the intent, content, and meaning of the reference. No additional unverified information is present, and no key information is missing.
+- **0** = Generated description is entirely unrelated or contradictory to the reference, OR either the generated or reference field is empty.
 
 ## Instructions
 1. Analyze each category independently and objectively.
-2. Assign a score (0-10, integers only) based on semantic similarity, factual accuracy, and completeness.
-3. Output a valid JSON object with categories (using exact names as provided) as keys and your evaluation as values.
+2. Assign an integer score from 0 to 10 based on the scoring guidelines below.
+3. Output ONLY a valid JSON object (no markdown code blocks, no surrounding text) with categories as keys and evaluation objects as values.
 
 ## Response Format
-Your response must follow this exact structure:
+Your ENTIRE response must be exactly this JSON structure and nothing else:
 {
     "category_name": {
         "reason": "Your detailed reasoning explaining the score",
@@ -18,141 +18,138 @@ Your response must follow this exact structure:
     },
     ...
 }
-Do not include any additional text, headers, or explanations outside this JSON structure.
 
 ## Scoring Guidelines
+
 ### Numerical Values and Ranges
-- If reference gives a specific value and generated matches exactly: rate as 10
-- If reference gives a range and generated value falls within this range: rate as 10
-- If generated value differs from reference: rate lower based on magnitude of difference
-- If reference gives a sequence of values, rate based on how closely the generated values match the pattern, trend, and magnitude
+- Exact match between generated value and reference specific value: rate as 10.
+- Generated range/value falls within reference range: rate as 10.
+- Generated value differs from reference specific value: deduct points based on relative deviation (e.g., minor difference within 10-20% → 8-9; moderate difference → 5-7; order-of-magnitude difference → 1-3).
+- Reference gives a sequence and generated gives a sequence: compare overlap, trend direction, and magnitude similarity. High overlap with matching trend → 8-10; partial overlap → 4-7; minimal overlap → 1-3.
+- **Important**: If the reference describes only a qualitative trend (e.g., "increases with radius") and the generated output provides specific numerical values, you cannot award a 10. The generated content, while possibly more detailed, does not "match" the reference in type or intent. Rate based on whether the numerical sequence supports the described trend. If it does, rate 7-8; if it contradicts, rate lower.
 
 ### Descriptive Content
-- Perfect match in meaning and detail: rate as 10
-- Minor differences in wording but same meaning: rate 8-9
-- Partial match with some missing or incorrect details: rate 4-7
-- Major discrepancies or contradictions: rate 1-3
-- Completely unrelated content: rate as 0
+- Perfect match in meaning and all key details: rate as 10.
+- Minor differences in wording or degree (e.g., "sharp" vs. "very sharp") but core meaning is identical: rate 8-9.
+- Partial match with some missing or slightly incorrect details: rate 4-7.
+- Major discrepancies or contradictions: rate 1-3.
+- Completely unrelated content: rate as 0.
 
-### Empty Fields
-- If generated is empty or reference is empty: rate as 0
+### Empty or Missing Fields
+- If EITHER generated or reference field is empty, null, or missing: rate as 0.
 
-### Consistency
-- Maintain consistent evaluation standards across all categories
-- Focus on semantic meaning rather than exact wording
-- Consider domain-specific terminology and conventions
+### Consistency Principles
+- Focus on semantic meaning rather than exact wording, but do not ignore factual discrepancies.
+- Providing extra information beyond the reference does NOT justify a higher score. Rate only on alignment with what the reference contains.
+- Apply the same standards consistently across all categories.
 
 ## Example 1:
 
 ### Input:
 - size
-Generated:large
-Reference:shell of moderate size
+Generated: large
+Reference: shell of moderate size
 - shape
-Generated:fusiform
-Reference:rhomboid in outline
+Generated: fusiform
+Reference: rhomboid in outline
 - equator
-Generated:concave in middle on one side and convex on another side
-Reference:equatorial portion inflated
+Generated: concave in middle on one side and convex on another side
+Reference: equatorial portion inflated
 - lateral_slopes
-Generated:straight
-Reference:slightly convex
+Generated: straight
+Reference: slightly convex
 - poles
-Generated:moderately acute
-Reference:sharp
+Generated: moderately acute
+Reference: sharp
 - coil_tightness
-Generated:inner 4-5 volutions tightly involute and successive ones loosing gradually
-Reference:the initial 3 or 4 being more tightly coiled than subsequent ones
+Generated: inner 4-5 volutions tightly involute and successive ones loosing gradually
+Reference: the initial 3 or 4 being more tightly coiled than subsequent ones
 - height_of_volution
-Generated:45, 68, 92, 125, 150, and 180 microns
-Reference:increases with increasing radius
+Generated: 45, 68, 92, 125, 150, and 180 microns
+Reference: increases with increasing radius
 - thickness_of_spircotheca
-Generated:5\u03bc to 30\u03bc
-Reference:8, 12, 16, 20, 33, 41, and 33 microns
+Generated: 5μ to 30μ
+Reference: 8, 12, 16, 20, 33, 41, and 33 microns
 - septa
-Generated:slightly fluted near the poles, planar across central regions
-Reference:irregular but tend to be tightly fluted across the entire length of the test
+Generated: slightly fluted near the poles, planar across central regions
+Reference: irregular but tend to be tightly fluted across the entire length of the test
 - tunnel_shape
-Generated:narrow tunnel
-Reference:regular with moderate width and height
+Generated: narrow tunnel
+Reference: regular with moderate width and height
 - chomata
-Generated:well-developed, prominent, extending to nearly half the height of the chambers in inner volutions
-Reference:high, narrow, steep-sided, slightly asymmetrical ridges which extend about half the distance to the tops of the chambers
+Generated: well-developed, prominent, extending to nearly half the height of the chambers in inner volutions
+Reference: high, narrow, steep-sided, slightly asymmetrical ridges which extend about half the distance to the tops of the chambers
 - axial_filling
-Generated:dense calcite fills chambers in polar regions
-Reference:light to moderately developed
+Generated: dense calcite fills chambers in polar regions
+Reference: light to moderately developed
 
 ### Output:
-```json
 {
-  "size": {"reason":"Generated describes the size as 'large', while Reference describes the size as 'shell of moderate size'. The generated description is not consistent with the reference description.", "rating": 5},
-  "shape": {"reason": "Reference describes the shape as 'rhomboid in outline', while Generated describes it as 'fusiform'. The generated description is not consistent with the reference description.", "rating": 3},
-  "equator": {"reason": "Generated describes the equator as 'concave in middle on one side and convex on another side', while Reference describes the equator as 'equatorial portion inflated'. The generated description is not consistent with the reference description.", "rating": 5},
-  "lateral_slopes": {"reason": "Generated describes the lateral slopes as 'straight', while Reference describes the equator as 'slightly convex'. They are not consistent but similar.", "rating": 6},
-  "poles": {"reason": "Generated describes the poles as 'moderately acute', while Reference describes the poles as 'sharp'. The generated description perfectly matches the reference description.", "rating": 10},
-  "coil_tightness": {"reason": "Generated describes the coil tightness as 'inner 4-5 volutions tightly involute and successive ones loosing gradually', while Reference describes the coil tightness as 'the initial 3 or 4 being more tightly coiled than subsequent ones'. The generated description is almost consistent with the reference description wiht slight difference in the number of volutions.", "rating": 9},
-  "height_of_volution": {"reason": "Generated provides specific measurements (45, 68, 92, 125, 150, and 180 microns) while Reference states 'increases with increasing radius'. The generated sequence aligns with the reference pattern and provides more information.", "rating": 10},
-  "thickness_of_spircotheca": {"reason": "Generated states 5 to 30 microns, which approximately falls within the Reference sequence of 8, 12, 16, 20, 33, 41, and 33 microns.", "rating": 8},
-  "septa": {"reason": "Generated describes the septa as 'slightly fluted near the poles, planar across central regions', while Reference describes the septa as 'irregular but tend to be tightly fluted across the entire length of the test'. The generated description is partial match with the reference description.", "rating": 7},
-  "tunnel_shape": {"reason": "Generated describes the tunnel shape as 'narrow tunnel', while Reference describes the tunnel shape as 'regular with moderate width and height'. The generated description is not consistent with the reference description.", "rating": 3},
-  "chomata": {"reason": "Reference describes the chomata as 'high, narrow, steep-sided, slightly asymmetrical ridges which extend about half the distance to the tops of the chambers', while Generated describes the chomata as 'well-developed, prominent, extending to nearly half the height of the chambers in inner volutions'. The height of chomata is consistent with the reference, but there are missing details in the Generated description.", "rating": 7},
-  "axial_filling": {"reason": "Generated describes the axial filling as 'dense calcite fills chambers in polar regions', while Reference describes the axial filling as 'light to moderately developed'. The generated description is not consistent with the reference description. The descriptions differ significantly in characteristics and distribution.", "rating": 2}
+  "size": {"reason": "Generated describes 'large' while reference specifies 'moderate size'. These are contradictory in degree.","rating": 4},
+  "shape": {"reason": "'Fusiform' (spindle-shaped) and 'rhomboid in outline' describe fundamentally different shapes. Not consistent.","rating": 2},
+  "equator": {"reason": "Generated describes a mixed concave/convex shape, while reference simply states 'inflated'. The descriptions are inconsistent.","rating": 4},
+  "lateral_slopes": {"reason": "'Straight' contradicts 'slightly convex'. While both describe slope, they disagree on the key characteristic.","rating": 3},
+  "poles": {"reason": "'Moderately acute' and 'sharp' convey similar meaning but differ in degree. 'Sharp' implies a more extreme form. Minor discrepancy.","rating": 8},
+  "coil_tightness": {"reason": "Both describe tight inner coiling that loosens outward. Minor difference in volution count (4-5 vs. 3-4). Core meaning is the same.","rating": 9},
+  "height_of_volution": {"reason": "Reference describes a qualitative trend ('increases with radius'), while generated provides specific values. The generated sequence (45 to 180) does show an increasing trend, which aligns with the reference's intent. However, the information types differ, so a perfect score is not warranted.","rating": 8},
+  "thickness_of_spircotheca": {"reason": "Generated range of 5-30μ partially overlaps with the reference sequence (8-41μ) but misses the higher values (33, 41). Significant difference in the upper range.","rating": 5},
+  "septa": {"reason": "Generated describes fluting only near poles and planar center, while reference specifies tight fluting across the entire test. Partial match on the presence of fluting, but contradicts on location and extent.","rating": 4},
+  "tunnel_shape": {"reason": "'Narrow' directly contradicts 'moderate width and height'. No alignment.","rating": 2},
+  "chomata": {"reason": "Both describe well-developed structures extending about halfway up the chambers. Generated lacks details about shape (narrow, steep-sided, asymmetrical) but captures the core dimension.","rating": 7},
+  "axial_filling": {"reason": "'Dense calcite fills chambers' contradicts 'light to moderately developed'. Completely different in degree and distribution.","rating": 1}
 }
-```
 
 ## Example 2:
 
 ### Input:
 - size
-Generated:small
-Reference:diminutive
+Generated: small
+Reference: diminutive
 - shape
-Generated:inflated fusiform
-Reference:inflated fusiform
+Generated: inflated fusiform
+Reference: inflated fusiform
 - equator
-Generated:stout
-Reference:equatorial portion inflated
+Generated: stout
+Reference: equatorial portion inflated
 - lateral_slopes
-Generated:strongly convex
-Reference:slightly concave
+Generated: strongly convex
+Reference: slightly concave
 - poles
-Generated:somewhat sharply or narrowly rounded
-Reference:sharply pointed
+Generated: somewhat sharply or narrowly rounded
+Reference: sharply pointed
 - thickness_of_spircotheca
-Generated:7, 9, 13, 17, 16, and 8 microns
-Reference:varies in thickness throughout any given volution
+Generated: 7, 9, 13, 17, 16, and 8 microns
+Reference: varies in thickness throughout any given volution
 - height_of_volution
-Generated:85, 85, 96, 116, 132, and 190 microns
-Reference:33, 49, 66, 114, 148, 197, and 213 microns
+Generated: 85, 85, 96, 116, 132, and 190 microns
+Reference: 33, 49, 66, 114, 148, 197, and 213 microns
 - septa
-Generated:pronounced but irregular fluting throughout
-Reference:closely spaced, with high and narrowly irregular fluting throughout the length of the shell
+Generated: pronounced but irregular fluting throughout
+Reference: closely spaced, with high and narrowly irregular fluting throughout the length of the shell
 - tunnel_shape
-Generated:poorly defined, wanders in the equatorial plane
-Reference:indistinct and cannot be accurately defined in any of the growth stages of the species
+Generated: poorly defined, wanders in the equatorial plane
+Reference: indistinct and cannot be accurately defined in any of the growth stages of the species
 - chomata
-Generated:faint, restricted to proloculus
-Reference:indistinct
+Generated: faint, restricted to proloculus
+Reference: indistinct
 - axial_filling
-Generated:present
-Reference:present, especially in the inner volutions, but it is irregular and does not appear in all specimens
+Generated: present
+Reference: present, especially in the inner volutions, but it is irregular and does not appear in all specimens
 
 ### Output:
-```json
 {
-  "size": {"reason":"Generated describes the size as 'small', which aligns with Reference's description of 'diminutive'.", "rating": 10},
-  "shape": {"reason": "Both Generated and Reference describe the shape as 'inflated fusiform', so they are perfectly aligned.", "rating": 10},
-  "equator": {"reason": "Generated describes the equator as 'stout', while Reference describes the equator as 'equatorial portion inflated'. The generated description is almost the same as reference description.", "rating": 10},
-  "lateral_slopes": {"reason": "Generated describes the lateral slopes as 'strongly convex', while Reference describes the equator as 'slightly concave'. They are not consistent.", "rating": 0},
-  "poles": {"reason": "Generated describes the poles as 'somewhat sharply or narrowly rounded', while Reference describes the poles as 'sharply pointed'. The generated description is not consistent with the reference description.", "rating": 5},
-  "height_of_volution": {"reason": "Generated provides specific measurements (85, 85, 96, 116, 132, and 190 microns) while Reference states '33, 49, 66, 114, 148, 197, and 213 microns'. Some of the generated sequence are close to the reference.", "rating": 6},
-  "thickness_of_spircotheca": {"reason": "Generated provides specific measurements (7, 9, 13, 17, 16, and 8 microns) while Reference states 'varies in thickness throughout any given volution'. The generated sequence aligns with the reference pattern and provides more information.", "rating": 10},
-  "septa": {"reason": "Generated describes the septa as 'pronounced but irregular fluting throughout', while Reference describes the septa as 'closely spaced, with high and narrowly irregular fluting throughout the length of the shell'. The Generated is approximately correct but some details are missing.", "rating": 8},
-  "tunnel_shape": {"reason": "Generated describes the tunnel shape as 'poorly defined, wanders in the equatorial plane', while Reference describes the tunnel shape as 'indistinct and cannot be accurately defined in any of the growth stages of the species'. The generated description is almost consistent with the reference description.", "rating": 9},
-  "chomata": {"reason": "Reference describes the chomata as 'indistinct', while Generated describes the chomata as 'faint, restricted to proloculus'. These descriptions are consistent.", "rating": 10},
-  "axial_filling": {"reason": "Generated describes the axial filling as 'present', while Reference describes the axial filling as 'present, especially in the inner volutions, but it is irregular and does not appear in all specimens'. The generated description partially matches the reference description.", "rating": 8}
+  "size": {"reason": "'Small' and 'diminutive' are synonyms conveying the same meaning. Perfect semantic alignment.","rating": 10},
+  "shape": {"reason": "Exact match between generated and reference descriptions.","rating": 10},
+  "equator": {"reason": "'Stout' and 'inflated' both describe a robust, expanded equatorial region. The core meaning is the same despite different wording.","rating": 9},
+  "lateral_slopes": {"reason": "'Strongly convex' is the direct opposite of 'slightly concave'. Completely contradictory.","rating": 0},
+  "poles": {"reason": "'Somewhat sharply or narrowly rounded' differs from 'sharply pointed'. Rounded vs. pointed represents a meaningful shape difference.","rating": 5},
+  "thickness_of_spircotheca": {"reason": "Reference describes a qualitative pattern ('varies in thickness'), while generated provides specific values. The generated sequence (7-17μ) does show variation, which aligns with the reference's core claim. However, the information types differ.","rating": 8},
+  "height_of_volution": {"reason": "The generated sequence (85-190μ) partially overlaps with the reference (33-213μ) and follows a similar increasing trend. Several values are close (e.g., 116 vs. 114, 190 vs. 197) but others differ notably (e.g., 85 vs. 33, 49). Moderate alignment.","rating": 6},
+  "septa": {"reason": "Both describe pronounced/irregular fluting throughout the shell. Generated misses details about spacing and fluting height but captures the key characteristics.","rating": 8},
+  "tunnel_shape": {"reason": "Both describe the tunnel as poorly defined/indistinct and difficult to characterize. The generated adds a detail about wandering, but the core meaning aligns closely.","rating": 9},
+  "chomata": {"reason": "'Faint, restricted to proloculus' is consistent with 'indistinct'. The generated adds a specific location detail, but this does not contradict the reference.","rating": 9},
+  "axial_filling": {"reason": "Generated correctly identifies axial filling as 'present', which matches the core claim of the reference. It omits details about distribution and irregularity, but does not contradict them.","rating": 7}
 }
-```
 
 ### Input:
 {input}
